@@ -61,7 +61,8 @@ Parameter recv_pkt : val.
 
   Context `{heapG Σ, lockG Σ, inG Σ (agreeR networkRA),
             inG Σ (exclR unitR),
-            inG Σ (excl_authR (prodO boolO ZO))
+            inG Σ (excl_authR (prodO boolO ZO)),
+            inG Σ (excl_authR ZO)
            }.
 
 Definition channelN (ch : val) := nroot .@ "channel" .@ ch.
@@ -111,25 +112,28 @@ Definition new_pkt : val :=
   let: "p" := ("epoch", "msg") in
   "p".
 
-Definition is_distributed_lock_node (s:val) (γs: gmap node_id gname) : iProp Σ
+Definition is_distributed_lock_node (s:val) (γs: gmap node_id gname) ρ: iProp Σ
   := (∃ (l:loc) (e:Z) (g:bool) (id:node_id) (γ:gname),
          ⌜s = #l⌝ ∗ (l ↦ (#g, #e, #id)%I)
-               ∗(⌜lookup id γs = Some γ⌝) ∗ own γ (●E (g, e))).
+               ∗(⌜lookup id γs = Some γ⌝) ∗ own γ (●E (g, e))
+               ∗(⌜g = true⌝∗own ρ (◯E (id)) ∨ ⌜g = false⌝)
+     ).
 
-Definition is_distributed_lock_inv (γs : gmap node_id gname) P : iProp Σ :=
+Definition is_distributed_lock_inv (γs : gmap node_id gname) ρ P : iProp Σ :=
   ( ([∗ map] γ ∈ γs, (∃ e:Z, own γ (◯E (false, e)))%I) ∗ P )
   ∨
   (∃ id0 γ0,
-      ⌜γs !! id0 = Some γ0⌝ ∗
-        ([∗ map] id ↦ γ ∈ γs,
+      ⌜γs !! id0 = Some γ0⌝
+        ∗ own ρ (●E (id0))
+        ∗([∗ map] id ↦ γ ∈ γs,
                             (⌜id = id0⌝ ∗(∃ e:Z, own γ0 (◯E (true, e))) ) ∨ (⌜id ≠ id0⌝ ∗ (∃ e:Z, own γ (◯E (false, e)))%I) )
            (* ∧ all packets in network are unacceptable *)
   ).
 
 Let N := nroot .@ "toylock".
 
-Definition is_distributed_lock (γs : gmap node_id gname) P : iProp Σ :=
-  inv N (is_distributed_lock_inv γs P).
+Definition is_distributed_lock (γs : gmap node_id gname) ρ P : iProp Σ :=
+  inv N (is_distributed_lock_inv γs ρ P).
 
 Definition node_grant : val :=
   λ: "s",
@@ -142,13 +146,20 @@ Definition node_grant : val :=
   else
     #().
 
-Lemma node_grant_spec η ns P γs s:
-  {{{ is_network η ns ∗ is_distributed_lock_node s γs ∗ is_distributed_lock γs P  ∗ P }}}
+Lemma ea_update γ a b c:
+    own γ (●E a ⋅ ◯E b) -∗ |==> own γ (●E c ⋅ ◯E c).
+Proof.
+  apply own_update.
+  apply excl_auth_update.
+Qed.
+
+Lemma node_grant_spec η ns P γs ρ s:
+  {{{ is_network η ns ∗ is_distributed_lock_node s γs ρ ∗ is_distributed_lock γs ρ P  ∗ P }}}
     node_grant s
-  {{{ RET #(); is_distributed_lock_node s γs }}}.
+  {{{ RET #(); is_distributed_lock_node s γs ρ }}}.
 Proof.
   iIntros (Φ) "(Hn & Hs & #HI & HP) Post".
-  iDestruct "Hs" as (l e g id γ) "(Hs & Hl & Hmap & Hγ)".
+  iDestruct "Hs" as (l e g id γ) "(Hs & Hl & Hmap & Hγ & Hρfrag)".
   iDestruct "Hs" as %->.
   iDestruct "Hmap" as %Hmap.
   wp_lam. wp_load. wp_let.
@@ -156,6 +167,7 @@ Proof.
   destruct g; wp_pures.
   - wp_lam. wp_let. wp_pures.
     wp_bind (_ <- _)%E.
+    iDestruct "Hρfrag" as "[[_ Hρfrag] | %]"; last done.
     iInv "HI" as "Hinv" "HClose".
     -- wp_store.
        iDestruct "Hinv" as "[[Hinv HinvP ] |Hinv]".
@@ -173,12 +185,29 @@ Proof.
     + iDestruct "Hinv" as (holder_id holder_γ) "(Hholder & Hinv)".
       iDestruct "Hholder" as %Hholder.
       rewrite (big_opM_delete _ γs holder_id holder_γ); last done.
-      iDestruct "Hinv" as "[Hholder Hinv]".
+      iDestruct "Hinv" as "(Hρ & Hholder & Hinv)".
       iDestruct "Hholder" as "[Hholder|Hholder]".
       ++ iDestruct "Hholder" as "[_ Hholder]".
-         iDestruct "Hholder" as (e) "Hholder".
-         
+         iDestruct "Hholder" as (e') "Hholder".
+         iCombine "Hρ Hρfrag" as "Hρ".
+         iDestruct (own_valid with "Hρ") as %Hvalid.
+         apply (excl_auth_agree holder_id id) in Hvalid.
+         rewrite <- Hvalid in Hmap.
+         elim Hvalid.
+         assert (holder_γ = γ) as Hγ_eq.
+         {
+           admit.
+         }
+         elim Hγ_eq.
+         iCombine "Hγ Hholder" as "Hγ".
+         iDestruct (own_valid with "Hγ") as %Hvalid2.
+         apply (excl_auth_agree) in Hvalid2.
+         destruct Hvalid2 as [_ Hvalid2]. simpl in Hvalid2. elim Hvalid2.
 
+         Check ◯E (false, e).
+         iDestruct (ea_update _ _ (false, e)%I with "Hγ") as "Hγ".
+
+         iDestruct (excl_auth_update e e (e+1)%Z with "Hγ") as %HH.
       {
         iExFalso.
         iDestruct "Hholder" as "[Hbad _]".
