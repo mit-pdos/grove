@@ -205,7 +205,25 @@ Proof.
          destruct Hvalid2 as [_ Hvalid2]. simpl in Hvalid2. elim Hvalid2.
 
          Check ◯E (false, e).
-         iDestruct (ea_update _ _ (false, e)%I with "Hγ") as "Hγ".
+         Check ea_update.
+         iMod (own_update _ _  (●E (false, (e+1)%Z) ⋅ ◯E (false, (e+1)%Z)) with "Hγ") as "Hγ"; first by apply excl_auth_update.
+         
+         iDestruct (big_sepM_mono _ (λ k x, (∃ e0 : Z, own x (◯E (false, e0)))%I) _ with "Hinv") as "Hinv".
+         {
+           intros. simpl. iStartProof.
+           iIntros "Hk".
+           iDestruct "Hk" as "[(% & _) |Hk]".
+           {
+             iExFalso.
+             Check lookup_delete.
+             rewrite -> H6 in H5.
+             rewrite -> (lookup_delete _ _) in H5.
+             discriminate.
+           }
+           iDestruct "Hk" as "(Hk & He)".
+           iDestruct "He" as (e0) "He".
+           iExists e0. auto.
+         }
 
          iDestruct (excl_auth_update e e (e+1)%Z with "Hγ") as %HH.
       {
