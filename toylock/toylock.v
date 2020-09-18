@@ -120,7 +120,9 @@ Definition is_distributed_lock_node (s:val) (γs: gmap node_id gname) ρ: iProp 
      ).
 
 Definition is_distributed_lock_inv (γs : gmap node_id gname) ρ P : iProp Σ :=
-  ( ([∗ map] γ ∈ γs, (∃ e:Z, own γ (◯E (false, e)))%I) ∗ P )
+  ( ([∗ map] γ ∈ γs, (∃ e:Z, own γ (◯E (false, e)))%I) ∗ P
+        ∗(∃ id0, own ρ (●E id0 ⋅ ◯E id0) )
+  )
   ∨
   (∃ id0 γ0,
       ⌜γs !! id0 = Some γ0⌝
@@ -196,7 +198,11 @@ Proof.
          elim Hvalid.
          assert (holder_γ = γ) as Hγ_eq.
          {
-           admit.
+           enough (Some γ = Some holder_γ).
+           injection H5 as Hdone. done.
+           rewrite <- Hholder.
+           rewrite <- Hmap.
+           done.
          }
          elim Hγ_eq.
          iCombine "Hγ Hholder" as "Hγ".
@@ -224,96 +230,52 @@ Proof.
            iDestruct "He" as (e0) "He".
            iExists e0. auto.
          }
+         iDestruct "Hγ" as "[Hγ Hγfrag]".
+         iDestruct (big_sepM_delete _ γs holder_id holder_γ with "[Hinv Hγfrag]") as "Hinv".
+          { auto. }
+          { iFrame.
+          iExists (e+1)%Z; iFrame.
+          }
+          simpl.
 
-         iDestruct (excl_auth_update e e (e+1)%Z with "Hγ") as %HH.
-      {
+          iMod ("HClose" with "[Hρ HP Hinv]").
+          {
+            iNext. iLeft. iFrame. iExists holder_id. iFrame.
+          }
+          iModIntro.
+          wp_seq.
+          wp_apply ((send_axiom η (#(e + 1), #true) (Build_message (e+1) true id%Z (id + 1)%Z) ns) with "[Hn]").
+          {
+            iFrame. auto.
+          }
+          
+          iIntros "_".
+          iApply "Post".
+          iExists l, (e+1)%Z, false, holder_id, holder_γ.
+          iFrame.
+          iSplit; first done.
+          iSplit; first done.
+
+          iRight.
+          done.
+
+      ++
         iExFalso.
         iDestruct "Hholder" as "[Hbad _]".
         iRevert "Hbad".
         iPureIntro. auto.
-      }
-      
-      iDestruct ("Hinv" $! id γ with "[]") as "Hinv".
-         { done. }
-         iDestruct "Hinv" as (e') "Hinv".
-         iExFalso.
-         iCombine "Hγ Hinv" as "Hγ".
-         iDestruct (own_valid with "Hγ") as %Hvalid.
-         iPureIntro.
-         Check excl_auth_agree.
-         apply (excl_auth_agree (true, e) (false, e')) in Hvalid.
-         elim Hvalid.
-         discriminate.
-       + iDestruct "Hinv" as (id' γ' e') "Hinv".
-         Print big_opL.
-         iDestruct "Hinv" as "(H1 & Hγ' & #Hids)".
-         iAssert (⌜id' = id⌝%I with ()) as "Hid".
-         {
-           iApply ("Hids" $! id γ e).
-         }
 
+  - iApply "Post".
+    iExists l, e, false, id, γ.
+    iFrame. auto.
+Qed.
 
-
-    wp_store.
-    Check send_axiom.
-    wp_apply ((send_axiom η (#(e + 1), #true) (Build_message (e+1) true id%Z (id + 1)%Z) ns) with "[Hn]").
-    { iFrame. auto. }
-    iIntros "Hn".
-
-    iApply "Post".
-    unfold is_distributed_lock_node.
-    iExists l.
-    iExists (e+1)%Z.
-    iExists false.
-    iExists id.
-    iExists γ.
-    iFrame.
-    rewrite -fupd_frame_l.
-    iSplit; first done.
-    rewrite -fupd_frame_l.
-    iSplit; first done.
-    unfold is_distributed_lock.
-    Check inv_alloc.
-    Check excl_auth_update.
-    -- iSpecialize ("Hinv" $! id).
-       iDestruct "Hinv" as ">Hinv".
-    -- iDestruct ("Hinv" $! id γ with "[]") as "HH".
-  -
-
-         "HI" as "Hinv" "HClose". admit.
-
-    Check fupd_wp.
-    iAssert (|={⊤}=> own γ (●E (false, (e + 1)%Z)))%I as "HHH".
-    -- iInv "HI" as "Hinv" "HClose". admit.
-    -- iDestruct "HHH" as "HHH".
-      
-    iMod fupd_intro_mask' as "HH".
-    iApply (fupd_elim ⊤ ⊤ ⊤).
-    iInv "HI" as "Hinv" "HClose".
-    
-
+(*
 Lemma node_grant_spec s P γs:
   {{{ is_distributed_lock_node s γs ∗ is_distributed_lock_node γs P }}}
     node_accept s
-  {{{ ∃b, RET #b; is_distributed_lock_node s γs ∗ ((b = false) ∨ (b = true ∗ P)) }}}
-
-Lemma node_grant_spec (s s1 s2:val) P :
-  {{{ is_distributed_lock s s1 s2 P }}}
-    node_grant s
-    {{{ RET #(); True }}}.
-Proof.
-  iIntros (Φ) "#HDLockInv Post".
-  wp_lam.
-  unfold is_distributed_lock.
-  iDestruct "HDLockInv" as "[Hs Hothers]".
-  iDestruct "Hs" as (l) "(Hl & HInv)".
-  iDestruct "Hl" as %->.
-  Print invG.
-  wp_bind (! _)%E.
-  iInv (dlockN #l) as (e g rch sch) "HI" "HClose".
-  iDestruct "HI" as "[HI | HI]".
-  - iDestruct "HI" as "[HI HII]". wp_load.
-    iMod ("HClose" with "[]").
-Admitted.
+    {{{ b, RET #b; is_distributed_lock_node s γs ∗ ((b = false) ∨ (b = true ∗ P)) }}}.
+  Admitted.
+*)
 
 End toylock_code.
