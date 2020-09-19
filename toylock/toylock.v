@@ -98,14 +98,17 @@ Axiom recv_axiom : forall m γ (s:network_state) (s':network_state) (id:node_id)
     ((option_map last (lookup id s)) = Some(Some(m))) ->
     {{{ is_channel γ s }}}
       recv_pkt #id
-    {{{ v, RET v; is_pkt v m ∗is_channel γ (removelast s) }}}.
+    {{{ v, is_pkt v m ∗is_channel γ (removelast s) }}}.
  *)
 
+Check (InjLV #()).
 (* recv with no-duplication (even the same packet being sent multiple times gets deduped) *)
-Axiom recv_axiom : forall γ (s:network_state) (s':network_state) (id:node_id),
+Axiom recv_axiom : forall γ (s:network_state) (id:node_id),
     {{{ is_network γ s }}}
       recv_pkt #id
-    {{{ v, RET v; ∃ m, ⌜m ∈ s ∧ m.(dst) = id⌝ ∗ is_pkt v m ∗is_network γ (s ∖ {[m]}) }}} .
+      {{{ (v:val), RET v; is_network γ s ∗( (⌜v = NONEV⌝)
+                    ∨ (∃ m (p:val), ⌜m ∈ s ∧ m.(dst) = id ∧ v = SOMEV p⌝ ∗ is_pkt p m ∗is_network γ (s ∖ {[m]})))
+      }}}.
 
 Definition new_pkt : val :=
   λ: "epoch" "msg",
@@ -148,12 +151,54 @@ Definition node_grant : val :=
   else
     #().
 
+Definition node_accept : val :=
+  λ: "s",
+  let: "n" := !"s" in
+  let: "p" := recv_pkt (Snd "n") in
+  match: "p" with
+    NONE => #false
+  | SOME "pkt" =>
+    if: (Snd $ Fst "n") < (Fst "pkt") then
+      "s" <- (#true, Fst "pkt", Snd "n") ;;
+      #true
+    else
+      #false
+  end.
+
+
 Lemma ea_update γ a b c:
     own γ (●E a ⋅ ◯E b) -∗ |==> own γ (●E c ⋅ ◯E c).
 Proof.
   apply own_update.
   apply excl_auth_update.
 Qed.
+
+Lemma node_accept_spec η ns s P γs ρ:
+  {{{ is_network η ns ∗
+       is_distributed_lock_node s γs ρ ∗ is_distributed_lock γs ρ P }}}
+    node_accept s
+    {{{ b, RET #b; is_distributed_lock_node s γs ρ ∗ (⌜b = false⌝ ∨ (⌜b = true⌝ ∗ P)) }}}.
+  iIntros (Φ) "(Hnet & Hnode & Hsys) Post".
+  iDestruct "Hnode" as (l e g id γ) "(Hs & Hl & #Hid & Hγ & Hρ)".
+  iDestruct "Hs" as %->.
+  wp_lam.
+  wp_load.
+  wp_pures.
+  Check recv_axiom.
+  Check send_axiom.
+  wp_bind (recv_pkt #id)%E.
+  wp_apply (recv_axiom η ns id with "Hnet").
+  iIntros (pkt) "(Hnet & Hpkt)".
+  iDestruct "Hpkt" as "[Hpkt|Hpkt]".
+  - (* recv returned NONEV *)
+    iDestruct "Hpkt" as %->.
+    wp_let. wp_match.
+    iApply "Post".
+    iSplitL "Hl Hγ Hρ".
+    + iExists l, e, g, id, γ. iFrame. iSplit; done.
+    + iLeft. done.
+  - (* recv returns a packet *)
+    Admitted.
 
 Lemma node_grant_spec η ns P γs ρ s:
   {{{ is_network η ns ∗ is_distributed_lock_node s γs ρ ∗ is_distributed_lock γs ρ P  ∗ P }}}
@@ -270,12 +315,5 @@ Proof.
     iFrame. auto.
 Qed.
 
-(*
-Lemma node_grant_spec s P γs:
-  {{{ is_distributed_lock_node s γs ∗ is_distributed_lock_node γs P }}}
-    node_accept s
-    {{{ b, RET #b; is_distributed_lock_node s γs ∗ ((b = false) ∨ (b = true ∗ P)) }}}.
-  Admitted.
-*)
 
 End toylock_code.
