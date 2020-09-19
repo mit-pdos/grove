@@ -69,9 +69,7 @@ Definition channelN (ch : val) := nroot .@ "channel" .@ ch.
 Definition dlockN (s: val) := nroot .@ "channel" .@ s.
 
 Definition is_pkt (p:val) (m:message) : iProp Σ :=
-  match m with
-  | {|epoch := e; grant := g|} => ⌜p = (PairV #e #g)⌝%I
-  end.
+  ⌜p = (PairV #(m.(epoch)) #(m.(grant)))⌝%I.
 
 Axiom is_network : forall (γ:gname) (s:network_state), iProp Σ.
 
@@ -106,8 +104,8 @@ Check (InjLV #()).
 Axiom recv_axiom : forall γ (s:network_state) (id:node_id),
     {{{ is_network γ s }}}
       recv_pkt #id
-      {{{ (v:val), RET v; is_network γ s ∗( (⌜v = NONEV⌝)
-                    ∨ (∃ m (p:val), ⌜m ∈ s ∧ m.(dst) = id ∧ v = SOMEV p⌝ ∗ is_pkt p m ∗is_network γ (s ∖ {[m]})))
+      {{{ (v:val), RET v; (is_network γ s ∗ (⌜v = NONEV⌝))
+                    ∨ (∃ m (p:val), ⌜m ∈ s ∧ m.(dst) = id ∧ v = SOMEV p⌝ ∗ is_pkt p m ∗is_network γ (s ∖ {[m]}))
       }}}.
 
 Definition new_pkt : val :=
@@ -130,9 +128,11 @@ Definition is_distributed_lock_inv (γs : gmap node_id gname) ρ P : iProp Σ :=
   (∃ id0 γ0,
       ⌜γs !! id0 = Some γ0⌝
         ∗ own ρ (●E (id0))
-        ∗([∗ map] id ↦ γ ∈ γs,
-                            (⌜id = id0⌝ ∗(∃ e:Z, own γ0 (◯E (true, e))) ) ∨ (⌜id ≠ id0⌝ ∗ (∃ e:Z, own γ (◯E (false, e)))%I) )
-           (* ∧ all packets in network are unacceptable *)
+        ∗([∗ map] id ↦ γ ∈ (delete id0 γs),
+                (∃ e:Z, own γ (◯E (false, e)))%I
+          )
+        ∗(∃ e:Z, own γ0 (◯E (true, e)))
+  (* ∧ all packets in network are unacceptable *)
   ).
 
 Let N := nroot .@ "toylock".
@@ -188,9 +188,9 @@ Lemma node_accept_spec η ns s P γs ρ:
   Check send_axiom.
   wp_bind (recv_pkt #id)%E.
   wp_apply (recv_axiom η ns id with "Hnet").
-  iIntros (pkt) "(Hnet & Hpkt)".
-  iDestruct "Hpkt" as "[Hpkt|Hpkt]".
+  iIntros (p) "[Hpkt|Hpkt]".
   - (* recv returned NONEV *)
+    iDestruct "Hpkt" as "(Hnet & Hpkt)".
     iDestruct "Hpkt" as %->.
     wp_let. wp_match.
     iApply "Post".
@@ -198,7 +198,61 @@ Lemma node_accept_spec η ns s P γs ρ:
     + iExists l, e, g, id, γ. iFrame. iSplit; done.
     + iLeft. done.
   - (* recv returns a packet *)
-    Admitted.
+    iDestruct "Hpkt" as (m pkt) "(Hmsg & Hpkt & Hnet)".
+    unfold is_pkt.
+    iDestruct "Hmsg" as "(Hmsg & Hdst & Hp)".
+    iDestruct "Hp" as %->.
+    wp_pures.
+    iDestruct "Hpkt" as %->.
+    wp_pures.
+    assert (exists me , m.(epoch) = me) as Hme.
+    {
+      exists (epoch m). done.
+    }
+    destruct Hme as [me Hme].
+    rewrite -> Hme.
+    case bool_decide.
+    + (* successfully received packet *)
+      wp_pures.
+      wp_bind (#l <- _)%E.
+      iInv N as "HI" "HClose".
+      wp_store.
+      unfold is_distributed_lock_inv.
+      iDestruct "HI" as "[HI|HI]".
+      -- (* Correct invariant case, all nodes do not have lock *)
+        iClear "Hρ".
+        iDestruct "Hid" as %Hid.
+        iDestruct "HI" as "(Hmap & HP & Hρ)".
+        iDestruct ((big_sepM_delete _ γs id γ) with "Hmap") as "(Hγfrag & Hmap)"; first done.
+        iDestruct "Hγfrag" as (e') "Hγfrag".
+        Check own_update_2.
+        iMod (own_update_2 _ _ _ (●E (true, me) ⋅ ◯E (true, me)) with "Hγ Hγfrag") as "[Hγ Hγfrag]"; first by apply excl_auth_update.
+        iDestruct "Hρ" as (id_ρ) "Hρ".
+        iMod (own_update _ _ (●E id ⋅ ◯E id) with "Hρ") as "[Hρ Hρfrag]"; first by apply excl_auth_update.
+        iMod ("HClose" with "[Hmap Hρ Hγfrag]").
+        {
+          iNext. iRight. iExists id, γ. iSplit; first done.
+          iFrame. iExists me. done.
+        }
+        iModIntro. wp_seq.
+        iApply "Post".
+        iSplitL "Hl Hγ Hρfrag".
+        {
+          iExists l, me, true, id, γ.
+          iSplit; first done. iFrame.
+          iSplit; first done.
+          iLeft. iFrame. done.
+        }
+        iRight. iFrame. done.
+      -- admit.
+    + wp_pures.
+      iApply "Post".
+      iSplitL "Hl Hγ Hρ".
+      { iExists l, e, g, id, γ. iFrame. iSplit; done. }
+      iLeft. done.
+Admitted.
+
+Admitted.
 
 Lemma node_grant_spec η ns P γs ρ s:
   {{{ is_network η ns ∗ is_distributed_lock_node s γs ρ ∗ is_distributed_lock γs ρ P  ∗ P }}}
