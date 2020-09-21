@@ -124,8 +124,9 @@ Definition new_pkt : val :=
 
 Definition own_distributed_lock_node (s:val) (γs: gmap node_id gname) ρ: iProp Σ
   := (∃ (l:loc) (e:Z) (g:bool) (id:node_id) (γ:gname),
-         ⌜s = #l⌝ ∗ (l ↦ (#g, #e, #id)%I)
-               ∗(⌜lookup id γs = Some γ⌝) ∗ own γ (●E (g, e))
+         ⌜s = #l⌝∗⌜lookup id γs = Some γ⌝
+               ∗(l ↦ (#g, #e, #id)%I)
+                ∗ own γ (●E (g, e))
                ∗(⌜g = true⌝∗own ρ (◯E (id)) ∨ ⌜g = false⌝)
      ).
 
@@ -185,14 +186,22 @@ Proof.
   apply excl_auth_update.
 Qed.
 
+(*
+Lemma recv_lemma η id P γs ρ:
+  {{{ is_distributed_lock γs ρ P η }}}
+    recv_pkt #id
+
+  {{{ (v:val), RET v; (⌜v = NONEV⌝ ∨ (∃ m (p:val), ⌜m ∈ ns ∧ m.(dst) = id ∧ v = SOMEV p⌝ ∗ is_pkt p m) )
+    }}}.
+*)
+
 Lemma node_accept_spec η s P γs ρ:
   {{{ own_distributed_lock_node s γs ρ ∗ is_distributed_lock γs ρ P η }}}
     node_accept s
   {{{ b, RET #b; own_distributed_lock_node s γs ρ ∗ (⌜b = false⌝ ∨ (⌜b = true⌝ ∗ P)) }}}.
 Proof.
-  iIntros (Φ) "(Hnode & Hsys) Post".
-  iDestruct "Hnode" as (l e g id γ) "(Hs & Hl & #Hid & Hγ & Hρ)".
-  iDestruct "Hs" as %->.
+  iIntros (Φ) "(Hnode & #Hsys) Post".
+  iDestruct "Hnode" as (l e g id γ -> Hid) "(Hl & Hγ & Hρfrag)".
   wp_lam.
   wp_load.
   wp_pures.
@@ -205,32 +214,44 @@ Proof.
   iDestruct "Hnet" as (ns) "(Hnet & InvRest)".
   wp_apply (recv_axiom _ _ η ns id with "Hnet").
   iIntros (p) "Hnet".
-  iMod ("HClose" with "[InvRest Hnet]").
-  { (* Closing invariant after recv *)
-    iNext. iDestruct "Hnet" as "[(_ & Hnet)|Hnet]".
-    + (* returned NONE *) iExists ns. iFrame.
-    + (* returned SOME pkt *)
-      iDestruct "InvRest" as "[InvRest|InvRest]".
-      ++ (* Case 1: no nodes hold lock *)
-        iDestruct "Hnet" as (m pdel) "Hnet".
-        iExists (ns∖{[m]})%I.
-        iDestruct "Hnet" as (Hnet Hpkt) "Hη".
-        iFrame. iLeft.
-        iDestruct "InvRest" as (m0 Hns) "InvRest".
-        iExists m0. iSplitL "". {
-          iPureIntro. admit.
-        }
-        iFrame.
-      ++ (* Case 2: a node holds the lock *)
-  }
-  iIntros (p) "[Hpkt|Hpkt]".
-  - (* recv returned NONEV *)
-    iDestruct "Hpkt" as (->) "Hnet".
-    wp_let. wp_match.
+  iDestruct "Hnet" as "[Hnet|Hnet]".
+  + (* returned NONE *)
+    iDestruct "Hnet" as (->) "Hnet".
+    iMod ("HClose" with "[InvRest Hnet]") as "_". { iExists ns. iFrame. }
+    iModIntro.
+    wp_pures.
     iApply "Post".
-    iSplitL "Hl Hγ Hρ".
-    + iExists l, e, g, id, γ. iFrame. iSplit; done.
-    + iSplitR "Hnet". { iLeft. done. } iExists ns; done.
+    iSplitL "Hl Hγ Hρfrag". { iExists l, e, g, id, γ. iFrame. iSplit; done. }
+    iLeft; done.
+  + iDestruct "Hnet" as (m pkt [Hm [_ ->]] ->) "Hη".
+    iMod ("HClose" with "[InvRest Hη]") as "_".
+    { (* Closing invariant in case that a packet is removed *)
+      iNext. admit.
+    }
+    iModIntro.
+    wp_pures.
+    destruct bool_decide as [HH|HH].
+  - (* Message epoch is higher *)
+    wp_pures. wp_bind (#l <- _)%E.
+    iInv N as "Hinv" "HClose".
+    wp_store.
+    iDestruct "Hinv" as (ns') "[Hnet [Hinv|Hinv]]".
+    -- iDestruct "Hinv" as (m') "(#Hns & Hmap & HP & Hρ)".
+       iDestruct ((big_sepM_delete _ γs id γ) with "Hmap") as "(Hγfrag & Hmap)"; first done.
+       iDestruct "Hγfrag" as (e' He') "Hγfrag".
+        iMod (own_update_2 _ _ _ (●E (true, m.(epoch)) ⋅ ◯E (true, m.(epoch))) with "Hγ Hγfrag") as "[Hγ Hγfrag]"; first by apply excl_auth_update.
+        iDestruct "Hρ" as "[Hρ Hρfrag']".
+        iMod ("HClose" with "[Hγfrag Hmap Hρfrag' Hnet]").
+        {
+          iNext. iExists ns'. iFrame. iRight.
+          iExists id, γ, m.(epoch). auto.
+          iSplit; first done.
+        }
+    (* Update ghost state and sho *)
+  - (* Message epoch is lower *)
+
+
+    
   - (* recv returns a packet *)
     iDestruct "Hpkt" as (m pkt [Hmsg [Hdst ->]] ->) "Hnet".
     wp_pures.
