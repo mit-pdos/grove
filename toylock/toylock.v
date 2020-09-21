@@ -51,7 +51,7 @@ Parameter recv_pkt : val.
                            ); by intros [].
   Qed.
     
-  Definition network_state := gset message.
+  Definition network_state := gmultiset message.
 
   Canonical Structure networkRA := leibnizO network_state.
 
@@ -65,13 +65,14 @@ Parameter recv_pkt : val.
             inG Σ (excl_authR ZO)
            }.
 
+
 Definition channelN (ch : val) := nroot .@ "channel" .@ ch.
 Definition dlockN (s: val) := nroot .@ "channel" .@ s.
 
 Definition is_pkt (p:val) (m:message) : iProp Σ :=
   ⌜p = (PairV #(m.(epoch)) #(m.(grant)))⌝%I.
 
-Axiom is_network : forall (γ:gname) (s:network_state), iProp Σ.
+Axiom own_network : forall (γ:gname) (s:network_state), iProp Σ.
 
 Print network_state.
 (* Send axiom for synchronous network *)
@@ -87,9 +88,12 @@ Axiom send_axiom : forall γ v (m:message) (s:network_state),
 *)
 
 Axiom send_axiom : forall γ v (m:message) (s:network_state),
-    {{{ is_network γ s ∗ is_pkt v m }}}
+    {{{ own_network γ s ∗ is_pkt v m }}}
       send_pkt v
-    {{{ RET #(); is_network γ (s ∪ {[ m ]}) }}}.
+    {{{ RET #(); own_network γ (s ∪ {[ m ]}) }}}.
+
+Axiom send_pkt_atomic : forall a v, Atomic a (send_pkt v).
+Existing Instance send_pkt_atomic.
 
 (* Recv axiom for synchronous network
 Axiom recv_axiom : forall m γ (s:network_state) (s':network_state) (id:node_id),
@@ -99,46 +103,54 @@ Axiom recv_axiom : forall m γ (s:network_state) (s':network_state) (id:node_id)
     {{{ v, is_pkt v m ∗is_channel γ (removelast s) }}}.
  *)
 
+(* *)
+
 Check (InjLV #()).
 (* recv with no-duplication (even the same packet being sent multiple times gets deduped) *)
-Axiom recv_axiom : forall γ (s:network_state) (id:node_id),
-    {{{ is_network γ s }}}
-      recv_pkt #id
-      {{{ (v:val), RET v; (is_network γ s ∗ (⌜v = NONEV⌝))
-                    ∨ (∃ m (p:val), ⌜m ∈ s ∧ m.(dst) = id ∧ v = SOMEV p⌝ ∗ is_pkt p m ∗is_network γ (s ∖ {[m]}))
+Axiom recv_axiom : forall s E γ (ns:network_state) (id:node_id),
+    {{{ ▷own_network γ ns }}}
+      recv_pkt #id @ s; E
+      {{{ (v:val), RET v; (⌜v = NONEV⌝ ∗own_network γ ns )
+                    ∨ (∃ m (p:val), ⌜m ∈ ns ∧ m.(dst) = id ∧ v = SOMEV p⌝ ∗ is_pkt p m ∗own_network γ (ns ∖ {[m]}))
       }}}.
+
+Axiom recv_pkt_atomic : forall a v, Atomic a (recv_pkt v).
+Existing Instance recv_pkt_atomic.
 
 Definition new_pkt : val :=
   λ: "epoch" "msg",
   let: "p" := ("epoch", "msg") in
   "p".
 
-Definition is_distributed_lock_node (s:val) (γs: gmap node_id gname) ρ: iProp Σ
+Definition own_distributed_lock_node (s:val) (γs: gmap node_id gname) ρ: iProp Σ
   := (∃ (l:loc) (e:Z) (g:bool) (id:node_id) (γ:gname),
          ⌜s = #l⌝ ∗ (l ↦ (#g, #e, #id)%I)
                ∗(⌜lookup id γs = Some γ⌝) ∗ own γ (●E (g, e))
                ∗(⌜g = true⌝∗own ρ (◯E (id)) ∨ ⌜g = false⌝)
      ).
 
-Definition is_distributed_lock_inv (γs : gmap node_id gname) ρ P : iProp Σ :=
-  ( ([∗ map] γ ∈ γs, (∃ e:Z, own γ (◯E (false, e)))%I) ∗ P
-        ∗(∃ id0, own ρ (●E id0 ⋅ ◯E id0) )
+Definition distributed_lock_inv (γs : gmap node_id gname) ρ P η : iProp Σ :=
+  ∃ ns, own_network η ns ∗
+  (
+  ( ∃ m, ⌜ns ⊆ {[ m ]}⌝ ∗ ([∗ map] γ ∈ γs, (∃ e:Z, ⌜(e < m.(epoch))%Z⌝ ∗ own γ (◯E (false, e)))%I) ∗ P
+            ∗own ρ (●E m.(dst) ⋅ ◯E m.(dst) )
   )
   ∨
-  (∃ id0 γ0,
+  (∃ id0 γ0 e0,
       ⌜γs !! id0 = Some γ0⌝
+        ∗ (⌜ns = ∅⌝)
         ∗ own ρ (●E (id0))
         ∗([∗ map] id ↦ γ ∈ (delete id0 γs),
-                (∃ e:Z, own γ (◯E (false, e)))%I
+                (∃ e:Z, ⌜(e < e0)%Z⌝ ∗own γ (◯E (false, e)))%I
           )
-        ∗(∃ e:Z, own γ0 (◯E (true, e)))
-  (* ∧ all packets in network are unacceptable *)
+    ∗(∃ e:Z, own γ0 (◯E (true, e0)))
+  )
   ).
 
 Let N := nroot .@ "toylock".
 
-Definition is_distributed_lock (γs : gmap node_id gname) ρ P : iProp Σ :=
-  inv N (is_distributed_lock_inv γs ρ P).
+Definition is_distributed_lock (γs : gmap node_id gname) ρ P η: iProp Σ :=
+  inv N (distributed_lock_inv γs ρ P η).
 
 Definition node_grant : val :=
   λ: "s",
@@ -173,12 +185,12 @@ Proof.
   apply excl_auth_update.
 Qed.
 
-Lemma node_accept_spec η ns s P γs ρ:
-  {{{ is_network η ns ∗
-       is_distributed_lock_node s γs ρ ∗ is_distributed_lock γs ρ P }}}
+Lemma node_accept_spec η s P γs ρ:
+  {{{ own_distributed_lock_node s γs ρ ∗ is_distributed_lock γs ρ P η }}}
     node_accept s
-    {{{ b, RET #b; is_distributed_lock_node s γs ρ ∗ (⌜b = false⌝ ∨ (⌜b = true⌝ ∗ P)) }}}.
-  iIntros (Φ) "(Hnet & Hnode & Hsys) Post".
+  {{{ b, RET #b; own_distributed_lock_node s γs ρ ∗ (⌜b = false⌝ ∨ (⌜b = true⌝ ∗ P)) }}}.
+Proof.
+  iIntros (Φ) "(Hnode & Hsys) Post".
   iDestruct "Hnode" as (l e g id γ) "(Hs & Hl & #Hid & Hγ & Hρ)".
   iDestruct "Hs" as %->.
   wp_lam.
@@ -187,38 +199,49 @@ Lemma node_accept_spec η ns s P γs ρ:
   Check recv_axiom.
   Check send_axiom.
   wp_bind (recv_pkt #id)%E.
-  wp_apply (recv_axiom η ns id with "Hnet").
+  iInv N as "Hnet" "HClose".
+  Check bi.later_exist.
+  iDestruct (bi.later_exist with "Hnet") as "Hnet".
+  iDestruct "Hnet" as (ns) "(Hnet & InvRest)".
+  wp_apply (recv_axiom _ _ η ns id with "Hnet").
+  iIntros (p) "Hnet".
+  iMod ("HClose" with "[InvRest Hnet]").
+  { (* Closing invariant after recv *)
+    iNext. iDestruct "Hnet" as "[(_ & Hnet)|Hnet]".
+    + (* returned NONE *) iExists ns. iFrame.
+    + (* returned SOME pkt *)
+      iDestruct "InvRest" as "[InvRest|InvRest]".
+      ++ (* Case 1: no nodes hold lock *)
+        iDestruct "Hnet" as (m pdel) "Hnet".
+        iExists (ns∖{[m]})%I.
+        iDestruct "Hnet" as (Hnet Hpkt) "Hη".
+        iFrame. iLeft.
+        iDestruct "InvRest" as (m0 Hns) "InvRest".
+        iExists m0. iSplitL "". {
+          iPureIntro. admit.
+        }
+        iFrame.
+      ++ (* Case 2: a node holds the lock *)
+  }
   iIntros (p) "[Hpkt|Hpkt]".
   - (* recv returned NONEV *)
-    iDestruct "Hpkt" as "(Hnet & Hpkt)".
-    iDestruct "Hpkt" as %->.
+    iDestruct "Hpkt" as (->) "Hnet".
     wp_let. wp_match.
     iApply "Post".
     iSplitL "Hl Hγ Hρ".
     + iExists l, e, g, id, γ. iFrame. iSplit; done.
-    + iLeft. done.
+    + iSplitR "Hnet". { iLeft. done. } iExists ns; done.
   - (* recv returns a packet *)
-    iDestruct "Hpkt" as (m pkt) "(Hmsg & Hpkt & Hnet)".
-    unfold is_pkt.
-    iDestruct "Hmsg" as "(Hmsg & Hdst & Hp)".
-    iDestruct "Hp" as %->.
+    iDestruct "Hpkt" as (m pkt [Hmsg [Hdst ->]] ->) "Hnet".
     wp_pures.
-    iDestruct "Hpkt" as %->.
-    wp_pures.
-    assert (exists me , m.(epoch) = me) as Hme.
-    {
-      exists (epoch m). done.
-    }
-    destruct Hme as [me Hme].
-    rewrite -> Hme.
-    case bool_decide.
+    destruct bool_decide as [HH|HH].
     + (* successfully received packet *)
       wp_pures.
       wp_bind (#l <- _)%E.
       iInv N as "HI" "HClose".
       wp_store.
-      unfold is_distributed_lock_inv.
-      iDestruct "HI" as "[HI|HI]".
+      unfold distributed_lock_inv.
+      iDestruct "HI" as (ns) "[Hnet [HI|HI]]".
       -- (* Correct invariant case, all nodes do not have lock *)
         iClear "Hρ".
         iDestruct "Hid" as %Hid.
@@ -252,10 +275,8 @@ Lemma node_accept_spec η ns s P γs ρ:
       iLeft. done.
 Admitted.
 
-Admitted.
-
 Lemma node_grant_spec η ns P γs ρ s:
-  {{{ is_network η ns ∗ is_distributed_lock_node s γs ρ ∗ is_distributed_lock γs ρ P  ∗ P }}}
+  {{{ own_network η ns ∗ is_distributed_lock_node s γs ρ ∗ is_distributed_lock γs ρ P  ∗ P }}}
     node_grant s
   {{{ RET #(); is_distributed_lock_node s γs ρ }}}.
 Proof.
