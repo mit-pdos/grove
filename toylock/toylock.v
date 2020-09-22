@@ -318,7 +318,13 @@ Proof.
     iInv "HI" as "Hinv" "HClose".
     iDestruct "Hinv" as (ns) "[Hnet [Hinv|Hinv]]".
     + (* Case 1: No nodes hold lock *)
-      iExFalso. admit.
+      wp_apply ((send_axiom _ _ η (#(e + 1), #true) (Build_message (e+1) true id%Z (id + 1)%Z) ns) with "[Hnet]"); first by iFrame.
+      iExFalso. iDestruct "Hinv" as (m _) "(Hγs & _ & _)".
+      iDestruct (big_sepM_delete _ γs id γ with "Hγs") as "(Hbad & _)"; first done.
+      iDestruct "Hbad" as (e0) "Hbad".
+      iDestruct (own_valid_2 γ _ _ with "Hγ Hbad") as %Hvalid.
+      iPureIntro. apply excl_auth_agree in Hvalid.
+      destruct Hvalid. done.
     + (* Case 2: A node holds the lock *)
       wp_apply ((send_axiom _ _ η (#(e + 1), #true) (Build_message (e+1) true id%Z (id + 1)%Z) ns) with "[Hnet]"); first by iFrame.
       iIntros "Hnet".
