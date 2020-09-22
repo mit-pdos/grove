@@ -77,7 +77,7 @@ Axiom own_network : forall (γ:gname) (s:network_state), iProp Σ.
 Print network_state.
 (* Send axiom for synchronous network *)
 (*
-Axiom send_axiom : forall γ v (m:message) (s:network_state),
+Axiom send_axiom : forall γ v (m:message) (ns:network_state),
     {{{ is_channel γ s ∗ is_pkt v m }}}
       send_pkt v
     {{{ RET #(); is_channel γ (partial_alter (λ l, match l with
@@ -87,10 +87,10 @@ Axiom send_axiom : forall γ v (m:message) (s:network_state),
                                             m.(dst) s) }}}.
 *)
 
-Axiom send_axiom : forall γ v (m:message) (s:network_state),
-    {{{ own_network γ s ∗ is_pkt v m }}}
-      send_pkt v
-    {{{ RET #(); own_network γ (s ∪ {[ m ]}) }}}.
+Axiom send_axiom : forall s E γ v (m:message) (ns:network_state),
+    {{{ ▷ own_network γ ns ∗ is_pkt v m }}}
+      send_pkt v @ s; E
+    {{{ RET #(); own_network γ (ns ∪ {[ m ]}) }}}.
 
 Axiom send_pkt_atomic : forall a v, Atomic a (send_pkt v).
 Existing Instance send_pkt_atomic.
@@ -297,99 +297,39 @@ Proof.
        revert Hm. admit.
 Admitted.
        
-    iMod ("HClose" with "[InvRest Hη]") as "_".
-    { (* Closing invariant in case that a packet is removed *)
-      iNext. iExists ∅.
-    }
-    iModIntro.
-    wp_pures.
-    destruct bool_decide as [HH|HH].
-  - (* Message epoch is higher *)
-    wp_pures. wp_bind (#l <- _)%E.
-    iInv N as "Hinv" "HClose".
-    wp_store.
-    iDestruct "Hinv" as (ns') "[Hnet [Hinv|Hinv]]".
-    -- iDestruct "Hinv" as (m') "(#Hns & Hmap & HP & Hρ)".
-       iDestruct ((big_sepM_delete _ γs id γ) with "Hmap") as "(Hγfrag & Hmap)"; first done.
-       iDestruct "Hγfrag" as (e' He') "Hγfrag".
-        iMod (own_update_2 _ _ _ (●E (true, m.(epoch)) ⋅ ◯E (true, m.(epoch))) with "Hγ Hγfrag") as "[Hγ Hγfrag]"; first by apply excl_auth_update.
-        iDestruct "Hρ" as "[Hρ Hρfrag']".
-        iMod ("HClose" with "[Hγfrag Hmap Hρfrag' Hnet]").
-        {
-          iNext. iExists ns'. iFrame. iRight.
-          iExists id, γ, m.(epoch). auto.
-          iSplit; first done.
-        }
-    (* Update ghost state and sho *)
-  - (* Message epoch is lower *)
-
-
-    
-  - (* recv returns a packet *)
-    iDestruct "Hpkt" as (m pkt [Hmsg [Hdst ->]] ->) "Hnet".
-    wp_pures.
-    destruct bool_decide as [HH|HH].
-    + (* successfully received packet *)
-      wp_pures.
-      wp_bind (#l <- _)%E.
-      iInv N as "HI" "HClose".
-      wp_store.
-      unfold distributed_lock_inv.
-      iDestruct "HI" as (ns) "[Hnet [HI|HI]]".
-      -- (* Correct invariant case, all nodes do not have lock *)
-        iClear "Hρ".
-        iDestruct "Hid" as %Hid.
-        iDestruct "HI" as "(Hmap & HP & Hρ)".
-        iDestruct ((big_sepM_delete _ γs id γ) with "Hmap") as "(Hγfrag & Hmap)"; first done.
-        iDestruct "Hγfrag" as (e') "Hγfrag".
-        Check own_update_2.
-        iMod (own_update_2 _ _ _ (●E (true, me) ⋅ ◯E (true, me)) with "Hγ Hγfrag") as "[Hγ Hγfrag]"; first by apply excl_auth_update.
-        iDestruct "Hρ" as (id_ρ) "Hρ".
-        iMod (own_update _ _ (●E id ⋅ ◯E id) with "Hρ") as "[Hρ Hρfrag]"; first by apply excl_auth_update.
-        iMod ("HClose" with "[Hmap Hρ Hγfrag]").
-        {
-          iNext. iRight. iExists id, γ. iSplit; first done.
-          iFrame. iExists me. done.
-        }
-        iModIntro. wp_seq.
-        iApply "Post".
-        iSplitL "Hl Hγ Hρfrag".
-        {
-          iExists l, me, true, id, γ.
-          iSplit; first done. iFrame.
-          iSplit; first done.
-          iLeft. iFrame. done.
-        }
-        iRight. iFrame. done.
-      -- admit.
-    + wp_pures.
-      iApply "Post".
-      iSplitL "Hl Hγ Hρ".
-      { iExists l, e, g, id, γ. iFrame. iSplit; done. }
-      iLeft. done.
-Admitted.
-
-Lemma node_grant_spec η ns P γs ρ s:
-  {{{ own_network η ns ∗ is_distributed_lock_node s γs ρ ∗ is_distributed_lock γs ρ P  ∗ P }}}
+Lemma node_grant_spec η ηne P γs ρ s:
+  {{{ own_distributed_lock_node s γs ρ ∗ is_distributed_lock γs ρ P η ηne  ∗ P }}}
     node_grant s
-  {{{ RET #(); is_distributed_lock_node s γs ρ }}}.
+  {{{ RET #(); own_distributed_lock_node s γs ρ }}}.
 Proof.
-  iIntros (Φ) "(Hn & Hs & #HI & HP) Post".
-  iDestruct "Hs" as (l e g id γ) "(Hs & Hl & Hmap & Hγ & Hρfrag)".
+  iIntros (Φ) "(Hs & #HI & HP) Post".
+  iDestruct "Hs" as (l e g id γ) "(Hs & Hmap & Hl & Hγ & Hρfrag)".
   iDestruct "Hs" as %->.
   iDestruct "Hmap" as %Hmap.
   wp_lam. wp_load. wp_let.
   wp_pures.
   destruct g; wp_pures.
-  - wp_lam. wp_let. wp_pures.
+  - (* Node has lock, and thus will send a packet *)
+    wp_lam. wp_let. wp_pures.
     wp_bind (_ <- _)%E.
     iDestruct "Hρfrag" as "[[_ Hρfrag] | %]"; last done.
+    wp_store.
+    wp_seq.
     iInv "HI" as "Hinv" "HClose".
-    -- wp_store.
-       iDestruct "Hinv" as "[[Hinv HinvP ] |Hinv]".
-    + iDestruct (big_opM_delete _ γs id γ) as "HinvProp"; first done.
-      iDestruct ("HinvProp" with "Hinv") as "[Hγfrag Hinv]".
-      iClear "HinvProp".
+    iDestruct "Hinv" as (ns) "[Hnet [Hinv|Hinv]]".
+    + (* Case 1: No nodes hold lock *)
+      iExFalso. admit.
+    + (* Case 2: A node holds the lock *)
+      wp_apply ((send_axiom _ _ η (#(e + 1), #true) (Build_message (e+1) true id%Z (id + 1)%Z) ns) with "[Hnet]"); first by iFrame.
+      iIntros "Hnet".
+      iDestruct "Hinv" as (id0 γ0 e0 Hid0 Hns) "(Hρ & Hγs & Hγfrag & Hηne)".
+      Check own_valid_2.
+      iDestruct (own_valid_2 ρ _ _ with "Hρ Hρfrag") as %Hvalid.
+      apply (excl_auth_agree id0 id) in Hvalid.
+      destruct Hvalid. rewrite Hid0 in Hmap. destruct Hmap as [ ].
+      rewrite Hid0 in Hmap.
+      iMod (own_update_2 _ _ _ (●E (false, e) ⋅ ◯E (true, e)) with "Hγ Hγfrag") as "[Hγ Hγfrag]"; first by apply excl_auth_update.
+
       iDestruct "Hγfrag" as (e') "Hγfrag".
       iCombine "Hγ Hγfrag" as "Hγ".
       iExFalso.
