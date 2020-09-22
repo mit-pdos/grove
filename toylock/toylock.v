@@ -161,7 +161,7 @@ Definition node_grant : val :=
   if: Fst $ Fst "n" = #true then (* if s.held == true { *)
     let: "e" := (Snd $ Fst "n") + #1 in
     let: "transfer_pkt" := (new_pkt "e" #true) in
-    "s" <- (#false, "e", (Snd "n")) ;;
+    "s" <- (#false, (Snd $ Fst "n"), (Snd "n")) ;;
     send_pkt ("transfer_pkt")
   else
     #().
@@ -326,103 +326,30 @@ Proof.
       Check own_valid_2.
       iDestruct (own_valid_2 ρ _ _ with "Hρ Hρfrag") as %Hvalid.
       apply (excl_auth_agree id0 id) in Hvalid.
-      destruct Hvalid. rewrite Hid0 in Hmap. destruct Hmap as [ ].
-      rewrite Hid0 in Hmap.
-      iMod (own_update_2 _ _ _ (●E (false, e) ⋅ ◯E (true, e)) with "Hγ Hγfrag") as "[Hγ Hγfrag]"; first by apply excl_auth_update.
-
-      iDestruct "Hγfrag" as (e') "Hγfrag".
-      iCombine "Hγ Hγfrag" as "Hγ".
-      iExFalso.
-      iDestruct (own_valid with "Hγ") as %Hvalid.
-      iPureIntro.
-      apply (excl_auth_agree (true, e) (false, e')) in Hvalid.
-      elim Hvalid. discriminate.
-
-    + iDestruct "Hinv" as (holder_id holder_γ) "(Hholder & Hinv)".
-      iDestruct "Hholder" as %Hholder.
-      rewrite (big_opM_delete _ γs holder_id holder_γ); last done.
-      iDestruct "Hinv" as "(Hρ & Hholder & Hinv)".
-      iDestruct "Hholder" as "[Hholder|Hholder]".
-      ++ iDestruct "Hholder" as "[_ Hholder]".
-         iDestruct "Hholder" as (e') "Hholder".
-         iCombine "Hρ Hρfrag" as "Hρ".
-         iDestruct (own_valid with "Hρ") as %Hvalid.
-         apply (excl_auth_agree holder_id id) in Hvalid.
-         rewrite <- Hvalid in Hmap.
-         elim Hvalid.
-         assert (holder_γ = γ) as Hγ_eq.
-         {
-           enough (Some γ = Some holder_γ).
-           injection H5 as Hdone. done.
-           rewrite <- Hholder.
-           rewrite <- Hmap.
-           done.
-         }
-         elim Hγ_eq.
-         iCombine "Hγ Hholder" as "Hγ".
-         iDestruct (own_valid with "Hγ") as %Hvalid2.
-         apply (excl_auth_agree) in Hvalid2.
-         destruct Hvalid2 as [_ Hvalid2]. simpl in Hvalid2. elim Hvalid2.
-
-         Check ◯E (false, e).
-         Check ea_update.
-         iMod (own_update _ _  (●E (false, (e+1)%Z) ⋅ ◯E (false, (e+1)%Z)) with "Hγ") as "Hγ"; first by apply excl_auth_update.
-         
-         iDestruct (big_sepM_mono _ (λ k x, (∃ e0 : Z, own x (◯E (false, e0)))%I) _ with "Hinv") as "Hinv".
-         {
-           intros. simpl. iStartProof.
-           iIntros "Hk".
-           iDestruct "Hk" as "[(% & _) |Hk]".
-           {
-             iExFalso.
-             Check lookup_delete.
-             rewrite -> H6 in H5.
-             rewrite -> (lookup_delete _ _) in H5.
-             discriminate.
-           }
-           iDestruct "Hk" as "(Hk & He)".
-           iDestruct "He" as (e0) "He".
-           iExists e0. auto.
-         }
-         iDestruct "Hγ" as "[Hγ Hγfrag]".
-         iDestruct (big_sepM_delete _ γs holder_id holder_γ with "[Hinv Hγfrag]") as "Hinv".
-          { auto. }
-          { iFrame.
-          iExists (e+1)%Z; iFrame.
-          }
-          simpl.
-
-          iMod ("HClose" with "[Hρ HP Hinv]").
-          {
-            iNext. iLeft. iFrame. iExists holder_id. iFrame.
-          }
-          iModIntro.
-          wp_seq.
-          wp_apply ((send_axiom η (#(e + 1), #true) (Build_message (e+1) true id%Z (id + 1)%Z) ns) with "[Hn]").
-          {
-            iFrame. auto.
-          }
-          
-          iIntros "_".
-          iApply "Post".
-          iExists l, (e+1)%Z, false, holder_id, holder_γ.
-          iFrame.
-          iSplit; first done.
-          iSplit; first done.
-
-          iRight.
-          done.
-
-      ++
-        iExFalso.
-        iDestruct "Hholder" as "[Hbad _]".
-        iRevert "Hbad".
-        iPureIntro. auto.
-
-  - iApply "Post".
-    iExists l, e, false, id, γ.
-    iFrame. auto.
-Qed.
-
+      destruct Hvalid. rewrite Hid0 in Hmap.
+      injection Hmap as ->.
+      iMod (own_update_2 _ _ _ (●E (false, e) ⋅ ◯E (false, e)) with "Hγ Hγfrag") as "[Hγ Hγfrag]"; first by apply excl_auth_update.
+      iMod (own_update_2 _ _ _ (●E (-1)%Z ⋅ ◯E (-1)%Z) with "Hρ Hρfrag") as "[Hρ Hρfrag]"; first by apply excl_auth_update.
+      symmetry in Hns; destruct Hns.
+      Check big_sepM_delete.
+      iDestruct (big_sepM_delete _ γs id0 γ with "[$ Hγs Hγfrag]") as "Hγs"; try by eauto.
+      
+      iMod ("HClose" with "[Hηne Hγs Hρ Hnet HP Hρfrag]").
+      {
+        iNext.
+        iExists (∅ ∪ {[{| epoch := e + 1; grant := true; src := id0; dst := (id0 + 1)%Z |}]}).
+        iFrame. iLeft.
+        iExists {| epoch:=e+1; grant:=true; src:=id0; dst := (id0 + 1)%Z|}.
+        iFrame. iSplit; first admit.
+        iCombine "Hρ Hρfrag" as "$".
+      }
+      iApply "Post".
+      iModIntro.
+      iExists l, e, false, id0, γ.
+      iFrame. iSplit; first done. iSplit; first done.
+      iRight. done.
+  -      
+    iApply "Post". iExists l, e, false, id, γ.  by iFrame.
+Admitted.
 
 End toylock_code.
