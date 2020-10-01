@@ -60,9 +60,7 @@ End UnlockReply.
 
 (* nondet.go *)
 
-Definition nondet: val :=
-  rec: "nondet" <> :=
-    #true.
+Axiom nondet: val.
 
 (* server.go *)
 
