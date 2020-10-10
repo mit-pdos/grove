@@ -5,6 +5,8 @@ From iris.heap_lang Require Export notation lang.
 From iris.heap_lang Require Import proofmode.
 From iris.proofmode Require Export tactics.
 
+Set Default Proof Using "Type".
+
 Class netG Σ := NetG {
   net_msgsG :> inG Σ (authR (gmultisetUR valO));
   net_ghostG :> ghost_varG Σ (gmultiset val);
@@ -25,7 +27,7 @@ Section movers.
   Axiom send_axiom : forall s E γ (v : val) (ns:network_state),
       {{{ own_network γ ns }}}
         send_pkt v @ s; E
-      {{{ RET #(); own_network γ (ns ∪ {[ v ]}) }}}.
+      {{{ RET #(); own_network γ (ns ⊎ {[ v ]}) }}}.
 
   Axiom send_pkt_atomic : forall a v, Atomic a (send_pkt v).
   Existing Instance send_pkt_atomic.
@@ -54,10 +56,16 @@ Section movers.
 
   Notation own_gnetwork ns := (ghost_var γgnet (1/2) ns).
 
-  Lemma recv_mkdiff (net_phys net_ghost : gmultiset val) m :
+  Lemma recv_mkdiff (net_phys net_ghost : gmultiset val) (m : val) :
+    m ∈ net_phys →
     own γgdiff (● net_ghost ⋅ ◯ net_phys) ==∗
     own γgdiff (● net_ghost ⋅ ◯ (net_phys ∖ {[ m ]})) ∗ own γgdiff (◯ {[ m ]}).
-  Proof. Admitted.
+  Proof.
+    iIntros (?) "[Hauth Hfrag]". rewrite own_op. iFrame "Hauth".
+    rewrite -own_op -auth_frag_op gmultiset_op_disj_union.
+    replace (net_phys ∖ {[m]} ⊎ {[m]}) with net_phys; first done.
+    rewrite [_ ⊎ _]comm -gmultiset_disj_union_difference' //.
+  Qed.
 
   Lemma recv_phys :
     network_ctx -∗
@@ -73,16 +81,28 @@ Section movers.
       - iNext. iExists _, _. iFrame.
       - iApply "HΦ". eauto. }
     iDestruct "Hret" as (m [Hm ->]) "Hpnet".
-    iMod (recv_mkdiff with "Hgdiff") as "[Hgdiff Hgtok]".
+    iMod (recv_mkdiff with "Hgdiff") as "[Hgdiff Hgtok]"; first done.
     iIntros "!>". iSplitR "HΦ Hgtok".
     - iNext. iExists _, _. iFrame.
     - iApply "HΦ". eauto.
   Qed.
 
-  Lemma recv_elimdiff (net_phys net_ghost : gmultiset val) m :
-    own γgdiff (● net_ghost ⋅ ◯ net_phys) -∗ own γgdiff (◯ {[ m ]}) ==∗
+  Lemma recv_elimdiff (net_phys net_ghost : gmultiset val) (m : val) :
+    own γgdiff (● net_ghost ⋅ ◯ net_phys) -∗ own γgdiff (◯ ({[ m ]} : gmultiset val)) ==∗
     ⌜m ∈ net_ghost⌝ ∗ own γgdiff (● (net_ghost ∖ {[ m ]}) ⋅ ◯ net_phys).
-  Proof. Admitted.
+  Proof.
+    iIntros "Hboth Hfrag". iCombine "Hboth Hfrag" as "Hboth".
+    rewrite -assoc -auth_frag_op gmultiset_op_disj_union.
+    iDestruct (own_valid with "Hboth") as
+      %[Hincl%gmultiset_included _]%auth_both_valid_discrete.
+    assert (m ∈ net_ghost).
+    { apply gmultiset_elem_of_singleton_subseteq.
+      etrans; last eassumption. apply gmultiset_disj_union_subseteq_r. }
+    iMod (own_update with "Hboth") as "$"; last done.
+    apply auth_update, gmultiset_local_update.
+    rewrite {1}(gmultiset_disj_union_difference' m net_ghost) //.
+    multiset_solver.
+  Qed.
 
   Lemma recv_log E ns m :
     ↑N ⊆ E →
@@ -98,22 +118,57 @@ Section movers.
     iMod (recv_elimdiff with "Hgdiff Hgtok") as (?) "Hgdiff".
     iIntros "!>". iSplitR "Hgnetc".
     - iNext. iExists _, _. iFrame.
-    - eauto.
+    - eauto with iFrame.
   Qed.
+
+  Lemma send_mkdiff (net_phys net_ghost : gmultiset val) m :
+    own γgdiff (● net_ghost ⋅ ◯ net_phys) ==∗
+    own γgdiff (● (net_ghost ⊎ ({[ m ]} : gmultiset val)) ⋅ ◯ net_phys) ∗ own γgdiff (◯ ({[ m ]} : gmultiset val)).
+  Proof.
+    iIntros "Hboth". rewrite -own_op -assoc -auth_frag_op gmultiset_op_disj_union.
+    iMod (own_update with "Hboth") as "$"; last done.
+    apply auth_update, gmultiset_local_update.
+    multiset_solver.
+ Qed.
 
   Lemma send_log E ns m :
     ↑N ⊆ E →
     network_ctx -∗
     own_gnetwork ns -∗
-    |={E}=> own γgdiff (◯ {[ m ]}) ∗ own_gnetwork (ns ∪ {[ m ]}).
-  Proof. Admitted.
+    |={E}=> own γgdiff (◯ {[ m ]}) ∗ own_gnetwork (ns ⊎ {[ m ]}).
+  Proof.
+    iIntros (?) "#Hctx Hgnetc".
+    iInv "Hctx" as (net_phys net_ghost) "(>Hpnet & >Hgdiff & >Hgnet)".
+    iDestruct (ghost_var_agree with "Hgnetc Hgnet") as %->.
+    iMod (ghost_var_update_halves with "Hgnetc Hgnet") as "[Hgnetc Hgnet]".
+    iMod (send_mkdiff with "Hgdiff") as "[Hgdiff Hgtok]".
+    iIntros "!>". iSplitR "Hgnetc Hgtok".
+    - iNext. iExists _, _. iFrame.
+    - eauto with iFrame.
+  Qed.
+
+  Lemma send_elimdiff (net_phys net_ghost : gmultiset val) m :
+    own γgdiff (● net_ghost ⋅ ◯ net_phys) -∗ own γgdiff (◯ {[ m ]}) ==∗
+    own γgdiff (● net_ghost ⋅ ◯ (net_phys ⊎ {[ m ]})).
+  Proof.
+    iIntros "Hboth Hfrag". iCombine "Hboth Hfrag" as "Hboth".
+    rewrite -assoc -auth_frag_op gmultiset_op_disj_union. done.
+  Qed.
 
   Lemma send_phys (m : val) :
     network_ctx -∗
     {{{ own γgdiff (◯ {[ m ]}) }}}
       send_pkt m
     {{{ RET #(); True }}}.
-  Proof. Admitted.
-
+  Proof.
+    iIntros "#Hctx" (Φ) "!# Hgtok HΦ".
+    iInv "Hctx" as (net_phys net_ghost) "(>Hpnet & >Hgdiff & >Hgnet)".
+    iApply (send_axiom with "Hpnet").
+    iIntros "!> Hpnet".
+    iMod (send_elimdiff with "Hgdiff Hgtok") as "Hgdiff".
+    iIntros "!>". iSplitR "HΦ".
+    - iNext. iExists _, _. iFrame.
+    - iApply "HΦ". eauto.
+  Qed.
 
 End movers.
